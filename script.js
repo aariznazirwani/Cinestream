@@ -6,6 +6,7 @@
 let plyrPlayer = null;
 let hlsInstance = null;
 let dashInstance = null;
+let errorRetries = 0;
 
 // DOM Elements
 const videoElement = document.getElementById('cinestream-player');
@@ -18,19 +19,24 @@ const diagResolution = document.getElementById('diag-resolution');
 const diagBuffer = document.getElementById('diag-buffer');
 const streamForm = document.getElementById('stream-form');
 const streamInput = document.getElementById('stream-url');
-const presetButtons = document.querySelectorAll('.btn-preset');
-const historyList = document.getElementById('history-list');
-const btnClearHistory = document.getElementById('btn-clear-history');
 
-// LocalStorage Keys
+// LocalStorage Keys (to clean up)
 const HISTORY_KEY = 'cinestream_history';
+
+// Clear any local browser storage pipelines previously associated with the old history cache data
+try {
+  localStorage.removeItem(HISTORY_KEY);
+  localStorage.clear();
+  console.log('Zero-footprint initialization: Local history storage cache pipelines cleared.');
+} catch (e) {
+  console.warn('Could not clear local storage pipelines:', e);
+}
 
 /**
  * Clean up existing player streaming adapters (Hls.js / Dash.js)
  * and reset the native video element to prevent memory leaks.
  */
 function cleanupEngines() {
-  // Mute logs/activity
   console.log('Cleaning up player engines...');
   
   // Reset Diagnostic Panel
@@ -61,11 +67,9 @@ function cleanupEngines() {
   if (videoElement) {
     try {
       videoElement.pause();
-      // Remove all source elements
       while (videoElement.firstChild) {
         videoElement.removeChild(videoElement.firstChild);
       }
-      // Detach src
       videoElement.removeAttribute('src');
       videoElement.load();
     } catch (e) {
@@ -75,31 +79,27 @@ function cleanupEngines() {
 }
 
 /**
- * Determine the stream protocol/type from the URL structure
+ * Determine the stream protocol/type using flexible regex matching
+ * to support heavily parameterized CDN and cryptographic redirect URLs.
  */
 function detectStreamType(url) {
   if (!url) return 'progressive';
   
-  try {
-    const parsed = new URL(url);
-    const pathname = parsed.pathname.toLowerCase();
-    
-    if (pathname.endsWith('.m3u8') || url.includes('.m3u8')) {
-      return 'hls';
-    }
-    if (pathname.endsWith('.mpd') || url.includes('.mpd')) {
-      return 'dash';
-    }
-    if (pathname.endsWith('.mp4') || url.includes('.mp4')) {
-      return 'mp4';
-    }
-    if (pathname.endsWith('.webm') || url.includes('.webm')) {
-      return 'webm';
-    }
-  } catch (e) {
-    // Return progressive as a fallback if URL construction fails
+  // Extract file type indicators from the URL string, ignoring parameters and hashes
+  if (/m3u8/i.test(url)) {
+    return 'hls';
+  }
+  if (/mpd/i.test(url)) {
+    return 'dash';
+  }
+  if (/mp4/i.test(url)) {
+    return 'mp4';
+  }
+  if (/webm/i.test(url)) {
+    return 'webm';
   }
   
+  // Default fallback if no obvious keywords are detected
   return 'progressive';
 }
 
@@ -161,9 +161,10 @@ function updateBufferStat() {
 /**
  * Setup Event Diagnostics for Hls.js
  */
-function setupHlsDiagnostics(hls) {
+function setupHlsDiagnostics(hls, url) {
   hls.on(Hls.Events.MANIFEST_PARSED, () => {
     updateState('Playing');
+    errorRetries = 0; // Reset error retries upon successful load
     videoElement.play().catch(err => {
       console.log('Autoplay deferred pending browser interaction:', err);
     });
@@ -185,18 +186,23 @@ function setupHlsDiagnostics(hls) {
     if (data.fatal) {
       switch (data.type) {
         case Hls.ErrorTypes.NETWORK_ERROR:
-          console.warn('Fatal HLS network error, attempting recovery...');
+          console.warn('Fatal HLS network error, attempting segment recovery...');
           hls.startLoad();
           break;
         case Hls.ErrorTypes.MEDIA_ERROR:
-          console.warn('Fatal HLS media error, attempting recovery...');
+          console.warn('Fatal HLS media error, attempting error recovery...');
           hls.recoverMediaError();
           break;
         default:
-          console.error('Fatal unrecoverable HLS error. Re-initializing engine...');
-          updateState('Error');
-          statusDot.className = 'status-dot error';
-          statusText.innerText = 'ENGINE: HLS CRITICAL';
+          console.error('Fatal unrecoverable HLS error. Intercepting and refreshing source bindings...');
+          if (errorRetries < 2) {
+            errorRetries++;
+            setTimeout(() => refreshSourceBindings(url), 500);
+          } else {
+            updateState('Error');
+            statusDot.className = 'status-dot error';
+            statusText.innerText = 'ENGINE: HLS CRITICAL';
+          }
           break;
       }
     }
@@ -206,9 +212,10 @@ function setupHlsDiagnostics(hls) {
 /**
  * Setup Event Diagnostics for Dash.js
  */
-function setupDashDiagnostics(dash) {
+function setupDashDiagnostics(dash, url) {
   dash.on(dashjs.MediaPlayer.events.PLAYBACK_METADATA_LOADED, () => {
     updateState('Playing');
+    errorRetries = 0; // Reset error retries upon successful load
   });
 
   dash.on(dashjs.MediaPlayer.events.QUALITY_CHANGE_RENDERED, (e) => {
@@ -228,10 +235,55 @@ function setupDashDiagnostics(dash) {
 
   dash.on(dashjs.MediaPlayer.events.ERROR, (e) => {
     console.error('Dash.js diagnostic warning/error:', e);
-    updateState('Error');
-    statusDot.className = 'status-dot error';
-    statusText.innerText = 'ENGINE: DASH ERROR';
+    if (errorRetries < 2) {
+      errorRetries++;
+      console.warn('DASH error intercepted. Attempting to refresh source bindings...');
+      setTimeout(() => refreshSourceBindings(url), 500);
+    } else {
+      updateState('Error');
+      statusDot.className = 'status-dot error';
+      statusText.innerText = 'ENGINE: DASH ERROR';
+    }
   });
+}
+
+/**
+ * Dynamically refresh source bindings during momentary Media Errors
+ * instead of halting the playback decoder thread.
+ */
+function refreshSourceBindings(url) {
+  console.log(`Refreshing engine source bindings for URL: ${url}`);
+  
+  const lastTime = videoElement ? videoElement.currentTime : 0;
+  const streamType = detectStreamType(url);
+  
+  if (streamType === 'hls' && hlsInstance) {
+    try {
+      hlsInstance.recoverMediaError();
+    } catch (e) {
+      console.warn('HLS recovery retry failed, re-attaching sources...', e);
+      hlsInstance.detachMedia();
+      hlsInstance.attachMedia(videoElement);
+      hlsInstance.loadSource(url);
+    }
+  } else if (streamType === 'dash' && dashInstance) {
+    try {
+      dashInstance.reset();
+      dashInstance.initialize(videoElement, url, true);
+    } catch (e) {
+      console.warn('Dash recovery retry failed, re-initializing...', e);
+    }
+  } else {
+    if (videoElement) {
+      videoElement.load();
+      videoElement.play().catch(err => console.log('Autoplay deferred:', err));
+    }
+  }
+
+  // Restore current playhead time after refresh
+  if (lastTime > 0 && videoElement) {
+    videoElement.currentTime = lastTime;
+  }
 }
 
 /**
@@ -239,38 +291,29 @@ function setupDashDiagnostics(dash) {
  */
 function loadStream(url) {
   if (!url || typeof url !== 'string') return;
-  url = url.trim();
+  
+  // Pre-process: Clean whitespace and resolve missing protocol schemes
+  url = url.trim().replace(/\s+/g, '');
   if (url === '') return;
 
-  console.log(`Loading stream endpoint: ${url}`);
-
-  // Highlight active preset button if applicable
-  presetButtons.forEach(btn => {
-    if (btn.getAttribute('data-url') === url) {
-      btn.classList.add('active');
+  if (!/^https?:\/\//i.test(url)) {
+    if (/^[a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,5}/i.test(url)) {
+      url = 'https://' + url;
     } else {
-      btn.classList.remove('active');
+      alert('Invalid protocol. Stream must be hosted on HTTP or HTTPS.');
+      return;
     }
-  });
+  }
+
+  console.log(`Loading stream endpoint: ${url}`);
+  errorRetries = 0; // Reset retries for new load
 
   // 1. Clear out active engines and resets state
   cleanupEngines();
 
-  // 2. Validate URL structure
-  try {
-    const validator = new URL(url);
-    if (validator.protocol !== 'http:' && validator.protocol !== 'https:') {
-      alert('Invalid protocol. Stream must be hosted on HTTP or HTTPS.');
-      return;
-    }
-  } catch (err) {
-    alert('Please enter a valid absolute media stream URL.');
-    return;
-  }
-
-  // 3. Detect and route
+  // 2. Detect format and route natively
   const streamType = detectStreamType(url);
-  diagFormat.innerText = streamType === 'progressive' ? 'MP4 / WEBM' : streamType.toUpperCase();
+  diagFormat.innerText = streamType === 'progressive' ? 'DIRECT FEED' : streamType.toUpperCase();
 
   if (streamType === 'hls') {
     diagEngine.innerText = 'HLS.js Core';
@@ -284,7 +327,7 @@ function loadStream(url) {
       });
       hlsInstance.loadSource(url);
       hlsInstance.attachMedia(videoElement);
-      setupHlsDiagnostics(hlsInstance);
+      setupHlsDiagnostics(hlsInstance, url);
     } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
       // Safari Native compatibility fallback
       diagEngine.innerText = 'Safari Native';
@@ -303,7 +346,7 @@ function loadStream(url) {
       try {
         dashInstance = dashjs.MediaPlayer().create();
         dashInstance.initialize(videoElement, url, true);
-        setupDashDiagnostics(dashInstance);
+        setupDashDiagnostics(dashInstance, url);
       } catch (err) {
         console.error('Error instantiating DASH client:', err);
         alert('Failed to initialize the MPEG-DASH media engine.');
@@ -314,15 +357,12 @@ function loadStream(url) {
     }
     
   } else {
-    // Direct Progressive feeds (MP4, WebM)
+    // Direct Progressive feeds (MP4, WebM, parameterized CDN paths)
     diagEngine.innerText = 'HTML5 Native';
     videoElement.src = url;
     videoElement.load();
     videoElement.play().catch(err => console.log('Autoplay deferred:', err));
   }
-
-  // 4. Save to cache history
-  addToHistory(url);
 }
 
 /**
@@ -351,7 +391,6 @@ function initPlyr() {
   
   videoElement.addEventListener('resize', () => {
     if (videoElement.videoWidth && videoElement.videoHeight) {
-      // Avoid overwriting HLS/DASH detailed text if already set with bitrate
       const currentRes = diagResolution.innerText;
       if (!currentRes.includes('Mbps')) {
         diagResolution.innerText = `${videoElement.videoWidth}x${videoElement.videoHeight}`;
@@ -359,113 +398,22 @@ function initPlyr() {
     }
   });
 
+  // Intercept native media errors and dynamically refresh bindings
   videoElement.addEventListener('error', (e) => {
-    updateState('Error');
-    diagEngine.innerText = 'Media Error';
-    console.error('HTML5 video media error:', e);
-  });
-}
-
-/**
- * Cache History log handlers
- */
-function getHistory() {
-  try {
-    const list = localStorage.getItem(HISTORY_KEY);
-    return list ? JSON.parse(list) : [];
-  } catch (e) {
-    return [];
-  }
-}
-
-function saveHistory(list) {
-  try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
-  } catch (e) {
-    // Fail silently if storage quota exceeded
-  }
-}
-
-function addToHistory(url) {
-  let list = getHistory();
-  // Filter out duplicate url if already exists
-  list = list.filter(item => item.url !== url);
-  // Add to top of array
-  list.unshift({ url: url, timestamp: Date.now() });
-  // Caps at 10 items
-  if (list.length > 10) {
-    list.pop();
-  }
-  saveHistory(list);
-  renderHistory();
-}
-
-function removeFromHistory(url) {
-  let list = getHistory();
-  list = list.filter(item => item.url !== url);
-  saveHistory(list);
-  renderHistory();
-}
-
-function clearHistory() {
-  saveHistory([]);
-  renderHistory();
-}
-
-function formatRelativeTime(timestamp) {
-  const diff = Date.now() - timestamp;
-  const secs = Math.floor(diff / 1000);
-  if (secs < 60) return 'just now';
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return new Date(timestamp).toLocaleDateString();
-}
-
-function renderHistory() {
-  if (!historyList) return;
-  
-  const list = getHistory();
-  if (list.length === 0) {
-    historyList.innerHTML = '<div class="empty-history-text">No recently played streams</div>';
-    return;
-  }
-
-  historyList.innerHTML = list.map(item => {
-    return `
-      <div class="history-item" data-url="${encodeURIComponent(item.url)}">
-        <div class="history-info">
-          <span class="history-url" title="${item.url}">${item.url}</span>
-          <span class="history-time">${formatRelativeTime(item.timestamp)}</span>
-        </div>
-        <div class="history-actions">
-          <button class="btn-icon play-history" title="Play stream">
-            <i class="fa-solid fa-play"></i>
-          </button>
-          <button class="btn-icon delete-history" title="Delete from log">
-            <i class="fa-solid fa-trash-can"></i>
-          </button>
-        </div>
-      </div>
-    `;
-  }).join('');
-
-  // Attach dynamic event listeners to history cards
-  historyList.querySelectorAll('.history-item').forEach(card => {
-    const url = decodeURIComponent(card.getAttribute('data-url'));
-    
-    // Play full history stream on click of the item (except delete)
-    card.addEventListener('click', (e) => {
-      if (e.target.closest('.delete-history')) {
-        e.stopPropagation();
-        removeFromHistory(url);
-        return;
+    console.error('Native HTML5 video error event intercepted:', e);
+    if (errorRetries < 2) {
+      errorRetries++;
+      console.warn(`Attempting source binding refresh (retry ${errorRetries}/2)...`);
+      const url = streamInput.value.trim();
+      if (url) {
+        setTimeout(() => refreshSourceBindings(url), 500);
       }
-      
-      streamInput.value = url;
-      loadStream(url);
-    });
+    } else {
+      updateState('Error');
+      diagEngine.innerText = 'Media Error';
+      statusDot.className = 'status-dot error';
+      statusText.innerText = 'ENGINE: ERROR';
+    }
   });
 }
 
@@ -475,36 +423,10 @@ streamForm.addEventListener('submit', (e) => {
   loadStream(streamInput.value);
 });
 
-presetButtons.forEach(btn => {
-  btn.addEventListener('click', () => {
-    const url = btn.getAttribute('data-url');
-    streamInput.value = url;
-    loadStream(url);
-  });
-});
-
-btnClearHistory.addEventListener('click', (e) => {
-  e.stopPropagation();
-  if (confirm('Clear the stream cache history log?')) {
-    clearHistory();
-  }
-});
-
 // App Start Initialization
 document.addEventListener('DOMContentLoaded', () => {
   initPlyr();
-  renderHistory();
   
   // Set up repeating buffer monitor
   setInterval(updateBufferStat, 300);
-
-  // Load the first preset video by default on startup
-  if (presetButtons.length > 0) {
-    const firstPreset = presetButtons[0];
-    const url = firstPreset.getAttribute('data-url');
-    streamInput.value = url;
-    
-    // We pass the URL but catch autoplay errors gracefully (since user has not interacted with the DOM yet)
-    loadStream(url);
-  }
 });
