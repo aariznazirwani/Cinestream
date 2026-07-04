@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cinestream // Custom Adaptive Media Player Engine</title>
+  <meta name="description" content="Cinestream is a high-performance web-based media player support HLS, MPEG-DASH, and standard MP4/WebM progressive streams with real-time stats diagnostics.">
+  
+  <!-- CDN Links for Style & Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha512-iecdLmaskl7CVkqkXNQ/ZH/XLlvWZOJyj7Yy7tcenmpD1ypASozpmT/E0iPtmFIB46ZmdtAc9eNBvH0H/ZpiBw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+  <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
+  <link rel="stylesheet" href="style.css">
+  
+  <!-- CDN Links for Video Processing Libraries (HLS and DASH) -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.4.10/dist/hls.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dashjs@4.7.1/dist/dash.all.min.js"></script>
+  <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+</head>
+<body>
+
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-container">
+        <div class="logo-icon">
+          <!-- Custom SVG Play/Stream Logo -->
+          <svg viewBox="0 0 24 24" width="16" height="16" xmlns="http://www.w3.org/2000/svg">
+            <path d="M8 5v14l11-7z"/>
+          </svg>
+        </div>
+        <h1 class="logo-text">Cinestream</h1>
+      </div>
+      
+      <div class="status-badge-container">
+        <div class="status-dot" id="status-dot"></div>
+        <span id="status-text">ENGINE: READY</span>
+      </div>
+    </header>
+
+    <!-- Main Section -->
+    <main class="app-main">
+      
+      <!-- Left Screen Viewport & Tech Stats -->
+      <section class="viewport-section">
+        
+        <!-- Player Wrapper -->
+        <div class="player-card">
+          <div class="video-wrapper">
+            <video id="cinestream-player" controls crossorigin playsinline></video>
+          </div>
+        </div>
+
+        <!-- Real-time Diagnostics Board -->
+        <div class="diagnostic-bar">
+          <div class="stat-item">
+            <span class="stat-label">Active Engine</span>
+            <span class="stat-value" id="diag-engine">HTML5 Native</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Format / Protocol</span>
+            <span class="stat-value" id="diag-format">None</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Decoder State</span>
+            <span class="stat-value" id="diag-state">Idle</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Resolution</span>
+            <span class="stat-value" id="diag-resolution">-</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Buffer Sizing</span>
+            <span class="stat-value" id="diag-buffer">0.00s</span>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- Right Sidebar Controls -->
+      <aside class="sidebar-section">
+        <div class="sidebar-scrollable">
+          
+          <!-- Stream Controller Input Card -->
+          <div class="sidebar-card">
+            <h2 class="card-title">
+              <i class="fa-solid fa-circle-play"></i> Stream Controller
+            </h2>
+            <form id="stream-form" class="input-group" onsubmit="event.preventDefault();">
+              <label for="stream-url" class="input-label">Feed Stream Endpoint URL</label>
+              <div class="stream-input-container">
+                <input 
+                  type="url" 
+                  id="stream-url" 
+                  class="stream-input" 
+                  placeholder="https://example.com/playlist.m3u8"
+                  required
+                >
+                <i class="fa-solid fa-link input-icon"></i>
+              </div>
+              <button type="submit" class="btn-primary" id="btn-load-stream">
+                <i class="fa-solid fa-tower-broadcast"></i> Load Stream
+              </button>
+            </form>
+          </div>
+
+          <!-- Quick Test Stream Selector Card -->
+          <div class="sidebar-card">
+            <h2 class="card-title">
+              <i class="fa-solid fa-flask"></i> Testing Presets
+            </h2>
+            <div class="presets-grid">
+              
+              <button 
+                class="btn-preset" 
+                data-url="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8" 
+                data-type="hls"
+                title="HLS Adaptive Stream"
+              >
+                <span>Big Buck Bunny</span>
+                <span class="preset-type">HLS</span>
+              </button>
+              
+              <button 
+                class="btn-preset" 
+                data-url="https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8" 
+                data-type="hls"
+                title="Apple HLS Stream"
+              >
+                <span>BipBop Master</span>
+                <span class="preset-type">HLS</span>
+              </button>
+              
+              <button 
+                class="btn-preset" 
+                data-url="https://dash.akamaized.net/envivio/EnvivioDash3/manifest.mpd" 
+                data-type="dash"
+                title="MPEG-DASH Adaptive Stream"
+              >
+                <span>Envivio Dash</span>
+                <span class="preset-type">DASH</span>
+              </button>
+              
+              <button 
+                class="btn-preset" 
+                data-url="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4" 
+                data-type="mp4"
+                title="Direct Progressive MP4"
+              >
+                <span>Sintel Trailer</span>
+                <span class="preset-type">MP4</span>
+              </button>
+              
+            </div>
+          </div>
+
+          <!-- Playback History Card -->
+          <div class="sidebar-card">
+            <div class="card-title" style="justify-content: space-between; border-bottom: 1px solid var(--border-color); width: 100%;">
+              <span><i class="fa-solid fa-history"></i> Recent History</span>
+              <button id="btn-clear-history" class="btn-icon delete-history" title="Clear All History">
+                <i class="fa-solid fa-trash-can"></i>
+              </button>
+            </div>
+            <div class="history-list" id="history-list">
+              <!-- Dynamically populated -->
+              <div class="empty-history-text">No recently played streams</div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Sidebar Footer -->
+        <footer class="sidebar-footer">
+          <div>Cinestream Media Core v1.0.0</div>
+          <div>Serverless Custom Player wrapper</div>
+        </footer>
+      </aside>
+
+    </main>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
